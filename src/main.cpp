@@ -4,6 +4,7 @@
 *********/
 
 // Libraries for SD card
+#include <Arduino.h>
 #include "FS.h"
 #include "SD.h"
 #include <SPI.h>
@@ -22,6 +23,7 @@ const char* password = "Tekirdag2011!";
 
 // Define CS pin for the SD card module
 #define SD_CS 5
+//Define hoe lang WiFi mag proberen te connecten 
 #define WIFI_TIMEOUT_MS 20000
 
 // Save reading number on RTC memory
@@ -79,22 +81,10 @@ void getReadings(){
 
 // Function to get date and time from NTPClient
 void getTimeStamp() {
-  while(!timeClient.update()) {
-    timeClient.forceUpdate();
-  }
-  // The formattedDate comes with the following format:
-  // 2018-05-28T16:00:13Z
-  // We need to extract date and time
-  formattedDate = timeClient.getFormattedDate();
-  Serial.println(formattedDate);
-
-  // Extract date
-  int splitT = formattedDate.indexOf("T");
-  dayStamp = formattedDate.substring(0, splitT);
-  Serial.println(dayStamp);
-  // Extract time
-  timeStamp = formattedDate.substring(splitT+1, formattedDate.length()-1);
-  Serial.println(timeStamp);
+      timeClient.update();
+      // Extract time
+      timeStamp = String(timeClient.getEpochTime() * 1000ULL);
+      Serial.println(timeStamp);
 }
 
 // Write the sensor readings on the SD card
@@ -151,6 +141,7 @@ void keepWifiAlive(void * parameters){
 }
 
 void task1(void *parameters) {
+  dht.begin(); 
   for(;;){
     getReadings();
     vTaskDelay(1000 / portTICK_PERIOD_MS);
@@ -158,6 +149,8 @@ void task1(void *parameters) {
 }
 
 void task2(void *parameters) {
+  timeClient.begin();
+  timeClient.setTimeOffset(7200);
   for(;;){
      getTimeStamp();
      vTaskDelay(1000 / portTICK_PERIOD_MS);
@@ -174,15 +167,6 @@ void task3(void *parameters) {
 void setup() {
   // Start serial communication for debugging purposes
   Serial.begin(115200);
-
-  // // Initialize a NTPClient to get time
-  // timeClient.begin();
-  // // Set offset time in seconds to adjust for your timezone, for example:
-  // // GMT +1 = 3600
-  // // GMT +8 = 28800
-  // // GMT -1 = -3600
-  // // GMT 0 = 0
-  // timeClient.setTimeOffset(7200);
 
   // Initialize SD card
   SD.begin(SD_CS);  
@@ -215,11 +199,10 @@ void setup() {
   file.close();
 
   // Start the DallasTemperature library
-  dht.begin(); 
    
    xTaskCreatePinnedToCore(keepWifiAlive, "keep Wifi alive", 5000, NULL, 2, NULL, CONFIG_ARDUINO_RUNNING_CORE);
    xTaskCreate(task1, "Temp sensor", 1000, NULL, 1, NULL);
-   //xTaskCreate(task2, "date", 1000, NULL, 1, NULL);
+   xTaskCreate(task2, "date", 5000, NULL, 1, NULL);
    
 }
 
