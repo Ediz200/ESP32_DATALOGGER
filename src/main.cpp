@@ -16,17 +16,13 @@
 #include <NTPClient.h>
 #include <WiFiUdp.h>
 
-// Define deep sleep options
-uint64_t uS_TO_S_FACTOR = 1000000;  // Conversion factor for micro seconds to seconds
-// Sleep for 10 minutes = 600 seconds
-uint64_t TIME_TO_SLEEP = 15;
-
 // Replace with your network credentials
 const char* ssid     = "Hoppala4";
 const char* password = "Tekirdag2011!";
 
 // Define CS pin for the SD card module
 #define SD_CS 5
+#define WIFI_TIMEOUT_MS 20000
 
 // Save reading number on RTC memory
 char readingID[] = "DHT11";
@@ -127,29 +123,66 @@ void writeFile(fs::FS &fs, const char * path, const char * message) {
   file.close();
 }
 
+void keepWifiAlive(void * parameters){
+  for(;;){
+    if(WiFi.status() == WL_CONNECTED){
+      Serial.println("WiFi still connected");
+      vTaskDelay(1000 / portTICK_PERIOD_MS);
+      continue;
+    }
+    // Connect to Wi-Fi network with SSID and password
+    Serial.print("Connecting to ");
+    Serial.println(ssid);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid, password);
+
+    unsigned long startAttemptTime = millis();
+
+    while(WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < WIFI_TIMEOUT_MS){}
+
+    if(WiFi.status() != WL_CONNECTED){
+      Serial.println("WIFI FAILED");
+      vTaskDelay(20000 / portTICK_PERIOD_MS);
+      continue;
+    }
+
+    Serial.println("WiFi Connected: " + WiFi.localIP());
+  }
+}
+
+void task1(void *parameters) {
+  for(;;){
+    getReadings();
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+  }
+}
+
+void task2(void *parameters) {
+  for(;;){
+     getTimeStamp();
+     vTaskDelay(1000 / portTICK_PERIOD_MS);
+  }
+}
+
+void task3(void *parameters) {
+  for(;;){
+    logSDCard();
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+  }
+}
+
 void setup() {
   // Start serial communication for debugging purposes
   Serial.begin(115200);
 
-  // Connect to Wi-Fi network with SSID and password
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println("");
-  Serial.println("WiFi connected.");
-
-  // Initialize a NTPClient to get time
-  timeClient.begin();
-  // Set offset time in seconds to adjust for your timezone, for example:
-  // GMT +1 = 3600
-  // GMT +8 = 28800
-  // GMT -1 = -3600
-  // GMT 0 = 0
-  timeClient.setTimeOffset(7200);
+  // // Initialize a NTPClient to get time
+  // timeClient.begin();
+  // // Set offset time in seconds to adjust for your timezone, for example:
+  // // GMT +1 = 3600
+  // // GMT +8 = 28800
+  // // GMT -1 = -3600
+  // // GMT 0 = 0
+  // timeClient.setTimeOffset(7200);
 
   // Initialize SD card
   SD.begin(SD_CS);  
@@ -181,19 +214,13 @@ void setup() {
   }
   file.close();
 
-  // Enable Timer wake_up
-  esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
-
   // Start the DallasTemperature library
   dht.begin(); 
-
-  getReadings();
-  getTimeStamp();
-  logSDCard();
-  
-  // Start deep sleep
-  Serial.println("DONE! Going to sleep now.");
-  esp_deep_sleep_start(); 
+   
+   xTaskCreatePinnedToCore(keepWifiAlive, "keep Wifi alive", 5000, NULL, 2, NULL, CONFIG_ARDUINO_RUNNING_CORE);
+   xTaskCreate(task1, "Temp sensor", 1000, NULL, 1, NULL);
+   //xTaskCreate(task2, "date", 1000, NULL, 1, NULL);
+   
 }
 
 void loop() {
