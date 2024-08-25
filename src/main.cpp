@@ -1,8 +1,3 @@
-/*********
-  Rui Santos
-  Complete project details at https://randomnerdtutorials.com  
-*********/
-
 // Libraries for SD card
 #include <Arduino.h>
 #include "FS.h"
@@ -16,6 +11,8 @@
 #include <WiFi.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
+
+#include <ArduinoJson.h>
 
 // Replace with your network credentials
 const char* ssid     = "Hoppala4";
@@ -32,13 +29,13 @@ char readingID[] = "DHT11";
 String dataMessage;
 
 // Data wire is connected to ESP32 GPIO 7
-#define DHTPIN 32
+//#define DHTPIN 32
 #define DHTTYPE DHT11
-// Setup a oneWire instance to communicate with a OneWire device
-DHT dht(DHTPIN, DHTTYPE);
+
 
 // Temperature Sensor variables
 float temperature;
+float btemperature;
 
 // Define NTP Client to get time
 WiFiUDP ntpUDP;
@@ -48,6 +45,43 @@ NTPClient timeClient(ntpUDP);
 String formattedDate;
 String dayStamp;
 String timeStamp;
+
+// Configuration that we'll store on disk
+struct SensorConfig {
+  int sampletime;
+  int port;
+};
+
+struct Config {
+  SensorConfig dht;
+};
+
+Config config; 
+DHT *dht;
+
+const char *filename = "/config.json";  // <- SD library uses 8.3 filenames
+
+void loadConfiguration(const char *filename, Config &config) {
+      //open the file for reading
+      File file = SD.open(filename);
+      
+      StaticJsonDocument<512> doc;
+
+      // Deserialize the JSON document
+      DeserializationError error = deserializeJson(doc, file);
+      if (error)
+      Serial.println(F("Failed to read file, using default configuration"));
+
+      //Copy values to struct
+      config.dht.port = doc["DHT"]["port"];
+      config.dht.sampletime = doc["DHT"]["sampletime"];
+
+      Serial.println("DHT " + String(config.dht.port) + " + " + String(config.dht.sampletime));
+
+      //Close file
+      file.close();
+}
+
 
 // Append data to the SD card (DON'T MODIFY THIS FUNCTION)
 void appendFile(fs::FS &fs, const char * path, const char * message) {
@@ -68,28 +102,27 @@ void appendFile(fs::FS &fs, const char * path, const char * message) {
 
 // Function to get temperature
 void getReadings(){
-  temperature = dht.readTemperature(); // Temperature in Celsius
+  temperature = dht->readTemperature(); // Temperature in Celsius
+  //Serial.println(String(temperature));
     
   if (isnan(temperature)) {
-    Serial.println("Failed to read from DHT sensor!");
+    temperature = btemperature;
     return;
   }
-
-  Serial.print("Temperature: ");
-  Serial.println(temperature);
+  else btemperature = temperature;
 }
 
 // Function to get date and time from NTPClient
 void getTimeStamp() {
       timeClient.update();
       // Extract time
-      timeStamp = String(timeClient.getEpochTime() * 1000ULL);
-      Serial.println(timeStamp);
+      timeStamp = String(timeClient.getFormattedDate());
+      //Serial.println(timeStamp);
 }
 
 // Write the sensor readings on the SD card
 void logSDCard() {
-  dataMessage = String(readingID) + "," + String(dayStamp) + "," + String(timeStamp) + "," + 
+  dataMessage = String(timeStamp) + "," + String(temperature) + "," + 
                 String(temperature) + "\r\n";
   Serial.print("Save data: ");
   Serial.println(dataMessage);
@@ -116,7 +149,6 @@ void writeFile(fs::FS &fs, const char * path, const char * message) {
 void keepWifiAlive(void * parameters){
   for(;;){
     if(WiFi.status() == WL_CONNECTED){
-      Serial.println("WiFi still connected");
       vTaskDelay(1000 / portTICK_PERIOD_MS);
       continue;
     }
@@ -141,10 +173,10 @@ void keepWifiAlive(void * parameters){
 }
 
 void task1(void *parameters) {
-  dht.begin(); 
+  // Setup a oneWire instance to communicate with a OneWire device
   for(;;){
     getReadings();
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    vTaskDelay(config.dht.sampletime / portTICK_PERIOD_MS);
   }
 }
 
@@ -153,14 +185,8 @@ void task2(void *parameters) {
   timeClient.setTimeOffset(7200);
   for(;;){
      getTimeStamp();
+     logSDCard();
      vTaskDelay(1000 / portTICK_PERIOD_MS);
-  }
-}
-
-void task3(void *parameters) {
-  for(;;){
-    logSDCard();
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
 }
 
@@ -191,18 +217,21 @@ void setup() {
   if(!file) {
     Serial.println("File doens't exist");
     Serial.println("Creating file...");
-    writeFile(SD, "/data.txt", "Reading ID, Date, Hour, Temperature \r\n");
+    writeFile(SD, "/data.txt", "Time, Temp1, Temp2, EC-sensor \r\n");
   }
   else {
     Serial.println("File already exists");  
   }
   file.close();
 
-  // Start the DallasTemperature library
-   
-   xTaskCreatePinnedToCore(keepWifiAlive, "keep Wifi alive", 5000, NULL, 2, NULL, CONFIG_ARDUINO_RUNNING_CORE);
-   xTaskCreate(task1, "Temp sensor", 1000, NULL, 1, NULL);
-   xTaskCreate(task2, "date", 5000, NULL, 1, NULL);
+  loadConfiguration(filename, config);
+
+  dht = new DHT(config.dht.port, DHTTYPE);
+  dht->begin();
+
+  xTaskCreatePinnedToCore(keepWifiAlive, "keep Wifi alive", 4096, NULL, 2, NULL, CONFIG_ARDUINO_RUNNING_CORE);
+  xTaskCreate(task2, "get unix time and SD card", 5000, NULL, 2, NULL);
+  xTaskCreate(task1, "Temp sensor", 2400, NULL, 1, NULL);
    
 }
 
